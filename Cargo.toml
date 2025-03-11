@@ -1,0 +1,11 @@
+[package]
+name = "rdeptree"
+version = "0.0.1"
+authors = ["Gregory Stepanov <grrstepanov@gmail.com>"]
+categories = ["command-line-utilities"]
+description = "simple python project dependencies explorer"
+keywords = ["python", "dependencies", "viewer", "dependency viewer"]
+readme = "README.md"
+edition = "2021"
+
+[dependencies]
