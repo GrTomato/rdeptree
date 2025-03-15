@@ -1,5 +1,6 @@
 use core::panic;
 use std::env;
+use std::path::PathBuf;
 use std::process::{Command, Output};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -73,7 +74,7 @@ fn check_venv_env_var() -> Option<String> {
     }
 }
 
-pub fn get_python_dependencies_loc() -> String {
+pub fn get_python_dependencies_loc() -> PathBuf {
     let python_interpreter_location = match check_venv_env_var() {
         Some(venv_env_val) => venv_env_val + "/bin/python3",
         None => get_python_interpreter_location(),
@@ -82,5 +83,5 @@ pub fn get_python_dependencies_loc() -> String {
     let trimmed_pil = python_interpreter_location.trim();
 
     let site_packages_location = find_python_site_packages_location(trimmed_pil);
-    site_packages_location.trim().to_string()
+    PathBuf::from(site_packages_location.trim().to_string())
 }
