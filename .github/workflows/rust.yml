@@ -1,0 +1,32 @@
+name: build
+
+permissions: {}
+
+on:
+  pull_request:
+  push:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        BUILD_TARGET: [release]
+    outputs:
+      release_build: ${{ steps.set-output.outputs.release_build }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: Output rust version
+      run: rustup --version
+    - name: Build app ver using ${{ matrix.BUILD_TARGET }} profile 
+      run: cargo build --verbose --profile ${{ matrix.BUILD_TARGET }}
+    # - uses: actions/upload-artifact@v4
+    #   with:
+    #     path: target/release/rdeptree
+    # - name: Run tests
+    #   run: cargo test --verbose
