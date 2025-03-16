@@ -1,6 +1,6 @@
 [package]
 name = "rdeptree"
-version = "0.0.1"
+version = "0.0.3"
 authors = ["Gregory Stepanov <grrstepanov@gmail.com>"]
 categories = ["command-line-utilities"]
 description = "simple python project dependencies explorer"
