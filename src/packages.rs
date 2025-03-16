@@ -128,3 +128,35 @@ pub fn get_env_installed_packs(env_path: &PathBuf) -> Vec<PackageMeta> {
     }
     packages_installed
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn package_meta_from_iter_success() {
+        let sample_meta = [
+            String::from("package: some-package"),
+            String::from("Name: Sample_Package"),
+            String::from("Version: v0.0.1"),
+            String::from("Developed by me"),
+        ];
+
+        let package_meta = PackageMeta::from_iter(sample_meta.into_iter());
+
+        assert_eq!(package_meta.name, "Sample_Package");
+        assert_eq!(package_meta.version, "v0.0.1");
+    }
+
+    #[test]
+    #[should_panic(expected = "called `Option::unwrap()` on a `None` value")]
+    fn package_meta_from_iter_fail() {
+        let sample_meta = [
+            String::from("package: some-package"),
+            String::from("Name: Sample_Package"),
+            String::from("Developed by me"),
+        ];
+
+        PackageMeta::from_iter(sample_meta.into_iter());
+    }
+}
