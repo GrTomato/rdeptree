@@ -1,64 +1,74 @@
-use std::collections::HashMap;
+use regex::Regex;
 use std::fs;
 use std::fs::{DirEntry, File};
 use std::io::{self, BufRead};
 use std::path::Path;
 use std::{fmt, path::PathBuf};
 
+const DISTRMETA_NAME_REGEX: &'static str = r"Name: (?<name>[a-zA-Z0-9._-]+)";
+/// from https://packaging.python.org/en/latest/specifications/name-normalization/#name-normalization
+const DISTRMETA_NAME_NORMALIZE_REGEX: &'static str = r"[-_.]+";
+const DISTRMETA_VERSION_REGEX: &'static str =
+    r"Version: (?<version>\d+(?:(?:\.|!)?(?:dev|post|a|b)?\d+\+?(?:rc|abc)?)+)*";
+
+/// Top-level distribution
 #[derive(Debug)]
-pub struct PackageMeta {
+pub struct DistrMeta {
     pub name: String,
     pub version: String,
-    // pub dependencies: Vec<String>,
 }
 
-impl PackageMeta {
-    fn from_iter<S>(i: S) -> Self
+impl DistrMeta {
+    fn normalize_name(name: &str, replace_regex: Regex, replace_to: &str) -> String {
+        replace_regex.replace_all(name, replace_to).to_lowercase()
+    }
+
+    fn parse_raw_str(name_str: &str, version_str: &str) -> Self {
+        // move to use once_cell::sync::Lazy;
+        let re_name = Regex::new(DISTRMETA_NAME_REGEX).unwrap();
+        let re_version = Regex::new(DISTRMETA_VERSION_REGEX).unwrap();
+        let re_name_normalize = Regex::new(DISTRMETA_NAME_NORMALIZE_REGEX).unwrap();
+
+        let name: String = re_name.captures(name_str).unwrap()["name"].parse().unwrap();
+        let normalized_name = DistrMeta::normalize_name(&name, re_name_normalize, "-");
+        let version: String = re_version.captures(version_str).unwrap()["version"]
+            .parse()
+            .unwrap();
+
+        Self {
+            name: normalized_name,
+            version,
+        }
+    }
+
+    fn from_iter<S>(i: S) -> Result<Self, &'static str>
     where
         S: IntoIterator<Item = String>,
     {
         let filtered_lines: Vec<String> = i
             .into_iter()
             .filter(|line| {
-                let pos = line.chars().position(|c| c == ':').unwrap_or(0);
-                &line[0..pos].to_lowercase() == "name" || &line[0..pos].to_lowercase() == "version"
-                // || &line[0..pos].to_lowercase() == "requires-dist"
+                line.to_lowercase().starts_with("name:")
+                    || line.to_lowercase().starts_with("version:")
             })
             .collect();
 
-        let mut constructor_map: HashMap<String, String> = HashMap::new();
-
-        for line in filtered_lines {
-            let (k, v) = line.split_once(": ").unwrap();
-
-            if k.to_lowercase() == "requires-dist" {
-                match constructor_map.get("requires-dist") {
-                    Some(map_val) => {
-                        let curr_val = v.to_string();
-                        constructor_map
-                            .insert(k.to_lowercase().to_string(), curr_val + "|" + map_val);
-                    }
-                    None => {
-                        constructor_map.insert(k.to_lowercase().to_string(), v.to_string());
-                    }
-                };
-            } else {
-                constructor_map.insert(k.to_lowercase().to_string(), v.to_string());
-            }
+        if filtered_lines.len() < 2 {
+            eprintln!(
+                "Unable to parse distr, not enough params: {:?}",
+                filtered_lines
+            );
+            return Err("Unable to parse distr meta, with params");
         }
 
-        Self {
-            name: constructor_map.get("name").unwrap().clone(),
-            version: constructor_map.get("version").unwrap().clone(),
-            // dependencies: match constructor_map.get("requires-dist") {
-            //     Some(v) => v.split("|").map(|v| v.to_string()).collect(),
-            //     None => vec![],
-            // },
-        }
+        Ok(DistrMeta::parse_raw_str(
+            &filtered_lines[0],
+            &filtered_lines[1],
+        ))
     }
 }
 
-impl fmt::Display for PackageMeta {
+impl fmt::Display for DistrMeta {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.name, self.version)
     }
@@ -108,8 +118,8 @@ fn get_meta_dirs(env_path: &PathBuf) -> impl Iterator<Item = DirEntry> {
         })
 }
 
-pub fn get_env_installed_packs(env_path: &PathBuf) -> Vec<PackageMeta> {
-    let mut packages_installed: Vec<PackageMeta> = Vec::new();
+pub fn get_env_installed_packs(env_path: &PathBuf) -> Result<Vec<DistrMeta>, &'static str> {
+    let mut packages_installed: Vec<DistrMeta> = Vec::new();
 
     for dir in get_meta_dirs(env_path) {
         // get metadata file
@@ -123,10 +133,10 @@ pub fn get_env_installed_packs(env_path: &PathBuf) -> Vec<PackageMeta> {
             })
             .expect("Can not constuct reader for a file {meta_file_path:?}");
 
-            packages_installed.push(PackageMeta::from_iter(read_until_blank));
+            packages_installed.push(DistrMeta::from_iter(read_until_blank)?);
         }
     }
-    packages_installed
+    Ok(packages_installed)
 }
 
 #[cfg(test)]
@@ -134,29 +144,111 @@ mod test {
     use super::*;
 
     #[test]
-    fn package_meta_from_iter_success() {
+    fn distr_meta_from_iter_simple() {
         let sample_meta = [
             String::from("package: some-package"),
             String::from("Name: Sample_Package"),
-            String::from("Version: v0.0.1"),
+            String::from("Version: 0.0.1"),
             String::from("Developed by me"),
         ];
 
-        let package_meta = PackageMeta::from_iter(sample_meta.into_iter());
+        let package_meta = DistrMeta::from_iter(sample_meta.into_iter()).unwrap();
 
-        assert_eq!(package_meta.name, "Sample_Package");
-        assert_eq!(package_meta.version, "v0.0.1");
+        assert_eq!(package_meta.name, "sample-package");
+        assert_eq!(package_meta.version, "0.0.1");
     }
 
     #[test]
-    #[should_panic(expected = "called `Option::unwrap()` on a `None` value")]
-    fn package_meta_from_iter_fail() {
+    fn distr_meta_no_version_fail() {
         let sample_meta = [
             String::from("package: some-package"),
             String::from("Name: Sample_Package"),
             String::from("Developed by me"),
         ];
 
-        PackageMeta::from_iter(sample_meta.into_iter());
+        let result = DistrMeta::from_iter(sample_meta.into_iter());
+        assert!(result.is_err());
+        assert_eq!(
+            result.err(),
+            Some("Unable to parse distr meta, with params")
+        );
+    }
+
+    #[test]
+    fn parse_distr_meta_input_str_simple() {
+        let name_input = "Name: some-package";
+        let expected_name = name_input
+            .split(": ")
+            .nth(1)
+            .expect("Unable to parse name. Check input or regex");
+
+        for version_input in [
+            "Version: 2.4.1",
+            "Version: 32.445.11",
+            "Version: 2014.04",
+            "Version: 1.0.15",
+            "Version: 1.0",
+        ] {
+            let actual_value = DistrMeta::parse_raw_str(name_input, version_input);
+            let expected_version = version_input
+                .split(": ")
+                .nth(1)
+                .expect("Unable to parse version. Check input or regex");
+
+            assert_eq!(
+                actual_value.name, expected_name,
+                "Test failed for the pair: actual={}, expected={}",
+                actual_value.name, expected_name
+            );
+            assert_eq!(
+                actual_value.version, expected_version,
+                "Test failed for the pair: actual={}, expected={}",
+                actual_value.version, expected_version
+            );
+        }
+    }
+
+    #[test]
+    fn parse_distr_meta_input_str_advanced() {
+        let name_input = "Name: there_is-complex--name";
+
+        for version_input in [
+            "Version: 1.dev0",
+            "Version: 1.0.dev456",
+            "Version: 1.0a1",
+            "Version: 1.0a2.dev456",
+            "Version: 1.0a12.dev456",
+            "Version: 1.0a12",
+            "Version: 1.0b1.dev456",
+            "Version: 1.0b2",
+            "Version: 1.0b2.post345.dev456",
+            "Version: 1.0b2.post345",
+            "Version: 1.0rc1.dev456",
+            "Version: 1.0rc1",
+            "Version: 1.0+abc.5",
+            "Version: 1.0+abc.7",
+            "Version: 1.0+5",
+            "Version: 1.0.post456.dev34",
+            "Version: 1.0.post456",
+            "Version: 1.1.dev1",
+            "Version: 1!1.0",
+        ] {
+            let actual_value = DistrMeta::parse_raw_str(name_input, version_input);
+            let expected_version = version_input
+                .split(": ")
+                .nth(1)
+                .expect("Unable to parse version. Check input or regex");
+
+            assert_eq!(
+                actual_value.name, "there-is-complex-name",
+                "Test failed for the pair: actual={}, expected={}",
+                actual_value.name, "there-is-complex-name"
+            );
+            assert_eq!(
+                actual_value.version, expected_version,
+                "Test failed for the pair: actual={}, expected={}",
+                actual_value.version, expected_version
+            );
+        }
     }
 }

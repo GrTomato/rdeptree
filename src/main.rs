@@ -3,9 +3,9 @@ mod packages;
 mod render;
 
 use locator::get_python_dependencies_loc;
-use packages::{get_env_installed_packs, PackageMeta};
+use packages::{get_env_installed_packs, DistrMeta};
 use render::render_output;
-use std::env;
+use std::{env, process};
 
 /// This part is devoted to parsing and processing of input params
 /// This fn will be replaced in future by more convenient framework functionality
@@ -31,7 +31,10 @@ fn main() {
 
     // step 3: For every METADATA File in given directory
     // Parse base information
-    let installed_packs: Vec<PackageMeta> = get_env_installed_packs(&path);
+    let installed_packs: Vec<DistrMeta> = get_env_installed_packs(&path).unwrap_or_else(|err| {
+        eprintln!("Problem parsing installed distributions: {err}");
+        process::exit(1);
+    });
     // step 4: Build some kind of data structure to store dependencies
 
     // step 5: print results
