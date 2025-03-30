@@ -1,15 +1,16 @@
 use regex::Regex;
+use std::collections::HashMap;
 use std::fs;
 use std::fs::{DirEntry, File};
 use std::io::{self, BufRead};
 use std::path::Path;
 use std::{fmt, path::PathBuf};
 
-const DISTRMETA_NAME_REGEX: &'static str = r"Name: (?<name>[a-zA-Z0-9._-]+)";
+const DISTRMETA_NAME_REGEX: &'static str = r"^(?:n|N)ame:(\s)?(?<name>[a-zA-Z0-9._-]+)";
 /// from https://packaging.python.org/en/latest/specifications/name-normalization/#name-normalization
 const DISTRMETA_NAME_NORMALIZE_REGEX: &'static str = r"[-_.]+";
 const DISTRMETA_VERSION_REGEX: &'static str =
-    r"Version: (?<version>\d+(?:(?:\.|!)?(?:dev|post|a|b)?\d+\+?(?:rc|abc)?)+)*";
+    r"^(?:v|V)ersion:(\s)?(?<version>\d+(?:(?:\.|!)?(?:dev|post|a|b)?\d+\+?(?:rc|abc)?)+)*";
 
 /// Top-level distribution
 #[derive(Debug)]
@@ -19,41 +20,46 @@ pub struct DistrMeta {
 }
 
 impl DistrMeta {
-    fn normalize_name(name: &str, replace_regex: Regex, replace_to: &str) -> String {
-        replace_regex.replace_all(name, replace_to).to_lowercase()
-    }
-
-    fn parse_raw_str(name_str: &str, version_str: &str) -> Self {
-        // move to use once_cell::sync::Lazy;
-        let re_name = Regex::new(DISTRMETA_NAME_REGEX).unwrap();
-        let re_version = Regex::new(DISTRMETA_VERSION_REGEX).unwrap();
+    fn normalize_name(name: &str, replace_to: &str) -> String {
         let re_name_normalize = Regex::new(DISTRMETA_NAME_NORMALIZE_REGEX).unwrap();
-
-        let name: String = re_name.captures(name_str).unwrap()["name"].parse().unwrap();
-        let normalized_name = DistrMeta::normalize_name(&name, re_name_normalize, "-");
-        let version: String = re_version.captures(version_str).unwrap()["version"]
-            .parse()
-            .unwrap();
-
-        Self {
-            name: normalized_name,
-            version,
-        }
+        re_name_normalize
+            .replace_all(name, replace_to)
+            .to_lowercase()
     }
 
-    fn from_iter<S>(i: S) -> Result<Self, &'static str>
+    fn from_iter<I, S>(i: I) -> Result<Self, &'static str>
     where
-        S: IntoIterator<Item = String>,
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
     {
-        let filtered_lines: Vec<String> = i
+        let field_pattens: HashMap<&str, Regex> = HashMap::from([
+            ("name", Regex::new(DISTRMETA_NAME_REGEX).unwrap()),
+            ("version", Regex::new(DISTRMETA_VERSION_REGEX).unwrap()),
+        ]);
+
+        let filtered_lines: HashMap<&str, String> = i
             .into_iter()
-            .filter(|line| {
-                line.to_lowercase().starts_with("name:")
-                    || line.to_lowercase().starts_with("version:")
+            .filter_map(|line| {
+                field_pattens.iter().find_map(|(colname, re)| {
+                    if re.is_match(line.as_ref()) {
+                        Some((
+                            *colname,
+                            re.captures(line.as_ref())
+                                .unwrap()
+                                .name(colname)
+                                .unwrap()
+                                .as_str()
+                                .to_string(),
+                        ))
+                    } else {
+                        None
+                    }
+                })
             })
+            .take(field_pattens.len())
             .collect();
 
-        if filtered_lines.len() < 2 {
+        if filtered_lines.len() < field_pattens.len() {
             eprintln!(
                 "Unable to parse distr, not enough params: {:?}",
                 filtered_lines
@@ -61,10 +67,10 @@ impl DistrMeta {
             return Err("Unable to parse distr meta, with params");
         }
 
-        Ok(DistrMeta::parse_raw_str(
-            &filtered_lines[0],
-            &filtered_lines[1],
-        ))
+        Ok(Self {
+            name: DistrMeta::normalize_name(&filtered_lines.get("name").unwrap(), "-"),
+            version: filtered_lines.get("version").unwrap().clone(),
+        })
     }
 }
 
@@ -175,80 +181,175 @@ mod test {
     }
 
     #[test]
-    fn parse_distr_meta_input_str_simple() {
-        let name_input = "Name: some-package";
-        let expected_name = name_input
-            .split(": ")
-            .nth(1)
-            .expect("Unable to parse name. Check input or regex");
+    fn parse_distr_meta_complex_names() {
+        let tests_cases = [
+            (["Name: package", "Version: 2.4.1"], "package", "2.4.1"),
+            (
+                ["Name: some-package", "Version: 32.445.11"],
+                "some-package",
+                "32.445.11",
+            ),
+            (
+                ["Name: some_package", "Version:2014.04"],
+                "some-package",
+                "2014.04",
+            ),
+            (
+                ["Name:some_package", "Version: 1.0.15"],
+                "some-package",
+                "1.0.15",
+            ),
+            (
+                ["Name:there-is_very--complicated_name", "Version: 1.0"],
+                "there-is-very-complicated-name",
+                "1.0",
+            ),
+        ];
 
-        for version_input in [
-            "Version: 2.4.1",
-            "Version: 32.445.11",
-            "Version: 2014.04",
-            "Version: 1.0.15",
-            "Version: 1.0",
-        ] {
-            let actual_value = DistrMeta::parse_raw_str(name_input, version_input);
-            let expected_version = version_input
-                .split(": ")
-                .nth(1)
-                .expect("Unable to parse version. Check input or regex");
+        for (input_data, expected_name, expected_ver) in tests_cases.iter() {
+            let actual_obj = DistrMeta::from_iter(input_data.iter()).unwrap();
 
             assert_eq!(
-                actual_value.name, expected_name,
+                actual_obj.name, *expected_name,
                 "Test failed for the pair: actual={}, expected={}",
-                actual_value.name, expected_name
+                actual_obj.name, *expected_name
             );
             assert_eq!(
-                actual_value.version, expected_version,
+                actual_obj.version, *expected_ver,
                 "Test failed for the pair: actual={}, expected={}",
-                actual_value.version, expected_version
+                actual_obj.version, *expected_ver
             );
         }
     }
 
     #[test]
-    fn parse_distr_meta_input_str_advanced() {
-        let name_input = "Name: there_is-complex--name";
+    fn parse_distr_meta_complex_version() {
+        let tests_cases = [
+            (
+                ["Name: simple-name", "Version: 1.dev0"],
+                "simple-name",
+                "1.dev0",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.0.dev456"],
+                "simple-name",
+                "1.0.dev456",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.0a1"],
+                "simple-name",
+                "1.0a1",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.0a2.dev456"],
+                "simple-name",
+                "1.0a2.dev456",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.0a12.dev456"],
+                "simple-name",
+                "1.0a12.dev456",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.0a12"],
+                "simple-name",
+                "1.0a12",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.0b1.dev456"],
+                "simple-name",
+                "1.0b1.dev456",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.0b2"],
+                "simple-name",
+                "1.0b2",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.0b2.post345.dev456"],
+                "simple-name",
+                "1.0b2.post345.dev456",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.0b2.post345"],
+                "simple-name",
+                "1.0b2.post345",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.0rc1.dev456"],
+                "simple-name",
+                "1.0rc1.dev456",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.0rc1"],
+                "simple-name",
+                "1.0rc1",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.0+abc.5"],
+                "simple-name",
+                "1.0+abc.5",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.0+abc.7"],
+                "simple-name",
+                "1.0+abc.7",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.0+5"],
+                "simple-name",
+                "1.0+5",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.0.post456.dev34"],
+                "simple-name",
+                "1.0.post456.dev34",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.0.post456"],
+                "simple-name",
+                "1.0.post456",
+            ),
+            (
+                ["Name: simple-name", "Version: 1.1.dev1"],
+                "simple-name",
+                "1.1.dev1",
+            ),
+            (
+                ["Name: simple-name", "Version: 1!1.0"],
+                "simple-name",
+                "1!1.0",
+            ),
+        ];
 
-        for version_input in [
-            "Version: 1.dev0",
-            "Version: 1.0.dev456",
-            "Version: 1.0a1",
-            "Version: 1.0a2.dev456",
-            "Version: 1.0a12.dev456",
-            "Version: 1.0a12",
-            "Version: 1.0b1.dev456",
-            "Version: 1.0b2",
-            "Version: 1.0b2.post345.dev456",
-            "Version: 1.0b2.post345",
-            "Version: 1.0rc1.dev456",
-            "Version: 1.0rc1",
-            "Version: 1.0+abc.5",
-            "Version: 1.0+abc.7",
-            "Version: 1.0+5",
-            "Version: 1.0.post456.dev34",
-            "Version: 1.0.post456",
-            "Version: 1.1.dev1",
-            "Version: 1!1.0",
-        ] {
-            let actual_value = DistrMeta::parse_raw_str(name_input, version_input);
-            let expected_version = version_input
-                .split(": ")
-                .nth(1)
-                .expect("Unable to parse version. Check input or regex");
+        for (input_data, expected_name, expected_ver) in tests_cases.iter() {
+            let actual_obj = DistrMeta::from_iter(input_data.iter()).unwrap();
 
             assert_eq!(
-                actual_value.name, "there-is-complex-name",
+                actual_obj.name, *expected_name,
                 "Test failed for the pair: actual={}, expected={}",
-                actual_value.name, "there-is-complex-name"
+                actual_obj.name, *expected_name
             );
             assert_eq!(
-                actual_value.version, expected_version,
+                actual_obj.version, *expected_ver,
                 "Test failed for the pair: actual={}, expected={}",
-                actual_value.version, expected_version
+                actual_obj.version, *expected_ver
             );
         }
+    }
+
+    #[test]
+    fn parse_requires_dist_drop_unmatched_rows() {
+        let input_data = [
+            "Header: document header",
+            "Version: 1.99.1241",
+            "NamedRow: ok",
+            "Name: pythonDistr",
+        ];
+
+        let obj = DistrMeta::from_iter(input_data.iter()).unwrap();
+
+        assert_eq!(obj.name, "pythondistr");
+        assert_eq!(obj.version, "1.99.1241");
     }
 }
