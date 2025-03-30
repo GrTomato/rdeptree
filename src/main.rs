@@ -1,6 +1,7 @@
 mod locator;
 mod packages;
 mod render;
+mod utils;
 
 use locator::get_python_dependencies_loc;
 use packages::{get_env_installed_packs, DistrMeta};
