@@ -1,6 +1,4 @@
-use std::collections::HashSet;
-
-use crate::packages::{DependencyDag, DistributionMeta, DistributionName};
+use crate::packages::{DependencyDag, DistributionName};
 
 /// Print results of the program, i.e. the list of installed
 /// packages and interpreter path
@@ -11,28 +9,25 @@ pub fn render_dag(
     level: usize,
 ) {
     let prefix = "-".repeat(level);
-    // This is temporary solution until validation
-    // for install packages will be developed
-    let meta = match dag.get(node_name) {
-        Some(val) => val,
-        None => &DistributionMeta {
-            installed_version: String::from("Not-installed"),
-            dependencies: HashSet::new(),
-        },
-    };
-    if let Some(required_ver) = node_required_ver {
-        println!(
-            "{}{} [required={}, installed={}]",
-            prefix, node_name, required_ver, meta.installed_version
-        )
-    } else {
-        println!(
-            "{}{} [installed={}]",
-            prefix, node_name, meta.installed_version
-        );
-    }
 
-    for dep in &meta.dependencies {
-        render_dag(dag, &dep.name, Some(&dep.required_version), level + 4);
-    }
+    match dag.get(node_name) {
+        Some(val) => {
+            if let Some(required_ver) = node_required_ver {
+                println!(
+                    "{}{} [required={}, installed={}]",
+                    prefix, node_name, required_ver, val.installed_version
+                )
+            } else {
+                println!(
+                    "{}{} [installed={}]",
+                    prefix, node_name, val.installed_version
+                );
+            }
+
+            for dep in &val.dependencies {
+                render_dag(dag, &dep.name, Some(&dep.required_version), level + 4);
+            }
+        }
+        None => return,
+    };
 }
