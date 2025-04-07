@@ -1,4 +1,4 @@
-use crate::packages::{DependencyDag, DistributionName};
+use crate::dag::{DependencyDag, DistributionName};
 
 /// Print results of the program, i.e. the list of installed
 /// packages and interpreter path

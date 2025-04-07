@@ -1,10 +1,10 @@
+mod dag;
 mod locator;
-mod packages;
 mod render;
 mod utils;
 
+use dag::get_dep_dag_from_env;
 use locator::get_python_dependencies_loc;
-use packages::get_dep_dag_from_env;
 use render::render_dag;
 use std::{collections::HashSet, env, process};
 
