@@ -38,6 +38,22 @@ pub struct DistributionMeta {
     pub dependencies: HashSet<RequiredDistribution>,
 }
 
+impl DistributionMeta {
+    fn new(
+        installed_version: String,
+        dependencies: HashSet<RequiredDistribution>,
+    ) -> Result<Self, &'static str> {
+        if installed_version.is_empty() {
+            return Err("Empty <Version> was provided while construction <DistributionMeta>");
+        }
+
+        Ok(Self {
+            installed_version,
+            dependencies,
+        })
+    }
+}
+
 pub type DependencyDag = HashMap<DistributionName, DistributionMeta>;
 
 const DISTRMETA_NAME_REGEX: &'static str = r"^(?:n|N)ame:(\s)?(?<name>[a-zA-Z0-9._-]+)";
@@ -88,10 +104,11 @@ where
         }
     }
 
-    let dm = DistributionMeta {
-        installed_version: installed_ver,
-        dependencies: dependencies,
-    };
+    let dm = DistributionMeta::new(installed_ver, dependencies)?;
+
+    if name.is_empty() {
+        return Err("Empty <Name> was provided while construction <DagNode>");
+    }
 
     Ok((name, dm))
 }
@@ -221,18 +238,36 @@ mod test {
         }
     }
 
-    // #[test]
-    // fn distr_meta_no_version_fail() {
-    //     let sample_meta = [
-    //         String::from("package: some-package"),
-    //         String::from("Name: Sample_Package"),
-    //         String::from("Developed by me"),
-    //     ];
+    #[test]
+    fn distr_meta_no_version_fail() {
+        let sample_meta = [
+            String::from("package: some-package"),
+            String::from("Name: Sample_Package"),
+            String::from("Developed by me"),
+        ];
 
-    //     let result = node_from_file_iter(sample_meta.into_iter());
-    //     assert!(dbg!(result).is_err());
-    //     // assert_eq!(result.err(), Some("Distr meta missing required fields"));
-    // }
+        let result = node_from_file_iter(sample_meta.into_iter());
+        assert!(result.is_err());
+        assert_eq!(
+            result.err(),
+            Some("Empty <Version> was provided while construction <DistributionMeta>")
+        );
+    }
+
+    #[test]
+    fn distr_meta_no_name_fail() {
+        let sample_meta = [
+            String::from("version: 1.0.1"),
+            String::from("Developed by me"),
+        ];
+
+        let result = node_from_file_iter(sample_meta.into_iter());
+        assert!(result.is_err());
+        assert_eq!(
+            result.err(),
+            Some("Empty <Name> was provided while construction <DagNode>")
+        );
+    }
 
     #[test]
     fn parse_distr_meta_complex_names() {
