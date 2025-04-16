@@ -1,11 +1,12 @@
+mod dag;
 mod locator;
-mod packages;
 mod render;
+mod utils;
 
+use dag::get_dep_dag_from_env;
 use locator::get_python_dependencies_loc;
-use packages::{get_env_installed_packs, PackageMeta};
-use render::render_output;
-use std::env;
+use render::render_dag;
+use std::{collections::HashSet, env, process};
 
 /// This part is devoted to parsing and processing of input params
 /// This fn will be replaced in future by more convenient framework functionality
@@ -29,11 +30,41 @@ fn main() {
         eprintln!("Path must point to an existing entity");
     }
 
-    // step 3: For every METADATA File in given directory
+    // step 3: parse metadata to dag
     // Parse base information
-    let installed_packs: Vec<PackageMeta> = get_env_installed_packs(&path);
-    // step 4: Build some kind of data structure to store dependencies
+    let dag = get_dep_dag_from_env(&path).unwrap_or_else(|err| {
+        eprintln!("Problem parsing installed distributions: {err}");
+        process::exit(1);
+    });
+
+    let non_empty_dependenices_names: HashSet<&String> = dag
+        .values()
+        .into_iter()
+        .filter_map(|v| {
+            if !v.dependencies.is_empty() {
+                Some(&v.dependencies)
+            } else {
+                None
+            }
+        })
+        .flatten()
+        .map(|v| &v.name)
+        .collect();
+
+    let top_level_distributions: Vec<&String> = dag
+        .keys()
+        .into_iter()
+        .filter_map(|k| {
+            if !non_empty_dependenices_names.contains(k) {
+                Some(k)
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // step 5: print results
-    render_output(&installed_packs);
+    for tlp in top_level_distributions {
+        render_dag(&dag, tlp, None, 0);
+    }
 }
