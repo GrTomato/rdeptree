@@ -59,7 +59,7 @@ pub type DependencyDag = HashMap<DistributionName, DistributionMeta>;
 const DISTRMETA_NAME_REGEX: &'static str = r"^(?:n|N)ame:(\s)?(?<name>[a-zA-Z0-9._-]+)";
 const DISTRMETA_VERSION_REGEX: &'static str =
     r"^(?:v|V)ersion:(\s)?(?<version>\d+(?:(?:\.|!)?(?:dev|post|a|b)?\d+\+?(?:rc|abc)?)+)*";
-const DEPDISTRMETA_NAME_REGEX: &'static str = r"^Requires-Dist:(\s)*(?<depname>[a-zA-Z0-9._-]+)(\s)?(\[\w+(?:,\w+)*\])?\s?(\()?(?<depver>(?:(?:,?\s?)?(?:<|<=|!=|==|>=|>|~=|===)+\s?(?:\d[!+\d.a-zA-Z*]+)?)+)?(\))?((?:\s)?;\s.*)?$";
+const DEPDISTRMETA_NAME_REGEX: &'static str = r"^Requires-Dist:(\s)*(?<depname>[a-zA-Z0-9._-]+)(\s)?(\[\w+(?:,\w+)*\])?\s?(\()?(?<depver>(?:(?:,?\s?)?(?:<|<=|!=|==|>=|>|~=|===)+\s?(?:\d[!+\d.a-zA-Z*]*)?)+)?(\))?((?:\s)?;\s.*)?$";
 
 fn node_from_file_iter<I, S>(i: I) -> Result<(DistributionName, DistributionMeta), &'static str>
 where
@@ -477,6 +477,14 @@ mod test {
                     "some-dependency-package",
                     ">= 1!1.0",
                 ],
+            ),
+            (
+                [
+                    "Name: simple-name",
+                    "Version: 1.0.post456",
+                    "Requires-Dist: urllib3 <3,>=1.21.1",
+                ],
+                ["simple-name", "1.0.post456", "urllib3", "<3,>=1.21.1"],
             ),
         ];
 
