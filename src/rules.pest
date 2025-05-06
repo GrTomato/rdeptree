@@ -1,0 +1,49 @@
+// Define whitespace handling: skip spaces and tabs implicitly between tokens.
+// Use explicit WHITESPACE where specific spacing is required (e.g., after the colon).
+WHITESPACE = _{ " " | "\t" }
+
+// Distribution NAME grammar
+distribution_name_kw =  { ^"Name" }
+distribution_name    = @{ (ASCII_ALPHANUMERIC | "-" | "_" | ".")+ }
+
+distribution_name_row = {
+    SOI ~ distribution_name_kw ~ ":" ~ distribution_name ~ EOI
+}
+
+// Distribution VERSION grammar
+distribution_version_kw =  { ^"Version" }
+distribution_version    = @{ (ASCII_ALPHANUMERIC | "-" | "_" | "." | "*" | "+" | "!")+ }
+
+distribution_version_row = {
+    SOI ~ distribution_version_kw ~ ":" ~ distribution_version ~ EOI
+}
+
+// REQUIRED distribution grammar
+required_distribution_kw =  { ^"Requires-Dist:" }
+comparison_operator      =  { ">=" | "<=" | "!=" | "===" | "==" | "~=" | ">" | "<" }
+version_comparison       = @{ (comparison_operator ~ WHITESPACE? ~ distribution_version) ~ ("," ~ comparison_operator ~ WHITESPACE? ~ distribution_version)? }
+env_var                  =  {
+    "python_version"
+  | "python_full_version"
+  | "os_name"
+  | "sys_platform"
+  | "platform_release"
+  | "platform_system"
+  | "platform_version"
+  | "platform_machine"
+  | "platform_python_implementation"
+  | "implementation_name"
+  | "implementation_version"
+  | "extra"
+}
+
+inner_quote    = @{ "'" | "\"" }
+inner_string   = @{ (!inner_quote ~ distribution_version)* }
+string_literal = @{ inner_quote ~ inner_string ~ inner_quote }
+
+extras         = { (";" ~ env_var ~ comparison_operator ~ string_literal)? }
+dependency_str = { version_comparison ~ extras? }
+
+required_distribution_row = {
+    SOI ~ required_distribution_kw ~ distribution_name ~ dependency_str ~ EOI
+}

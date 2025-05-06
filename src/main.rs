@@ -1,5 +1,6 @@
 mod dag;
 mod locator;
+mod parser;
 mod render;
 mod utils;
 
