@@ -85,7 +85,8 @@ where
         ),
     ];
 
-    let mut parsed_dependencies: HashMap<String, String> = HashMap::new();
+    let mut parsed_meta: HashMap<String, String> = HashMap::new();
+    let mut parsed_dependencies: HashSet<(String, String)> = HashSet::new();
 
     // iterate over all lines and get parsed strings for required keys
     for line in source_iter {
@@ -116,16 +117,21 @@ where
             .collect();
 
         if !filtered.0.is_empty() {
-            parsed_dependencies.insert(filtered.0, filtered.1);
+            // it is important to use `.starts_with` bc keywords can be found inside the string
+            if filtered.0.starts_with("name") || filtered.0.starts_with("version") {
+                parsed_meta.insert(filtered.0, filtered.1);
+            } else {
+                parsed_dependencies.insert(filtered);
+            }
         }
     }
 
-    let name = match parsed_dependencies.contains_key("name") {
-        true => parsed_dependencies.remove("name").unwrap(),
+    let name = match parsed_meta.contains_key("name") {
+        true => parsed_meta.remove("name").unwrap(),
         false => return Err("Can not parse package name from file"),
     };
-    let version = match parsed_dependencies.contains_key("version") {
-        true => parsed_dependencies.remove("version").unwrap(),
+    let version = match parsed_meta.contains_key("version") {
+        true => parsed_meta.remove("version").unwrap(),
         false => return Err("Can not parse version name from file"),
     };
 
@@ -203,6 +209,45 @@ mod test {
             expected_dependency.required_version,
             actual_dependency.required_version
         );
+    }
+
+    #[test]
+    fn distr_meta_from_iter_repeating_distrs_different_version() {
+        let sample_meta = [
+            "package: some-package",
+            "Name: Sample_Package",
+            "Version: 0.0.1",
+            "Developed by me",
+            "Requires-Dist: numpy>=1.22.4; python_version < \"3.11\"",
+            "Requires-Dist: numpy>=1.23.2; python_version == \"3.11\"",
+            "Requires-Dist: numpy>=1.26.0; python_version >= \"3.12\"",
+        ];
+
+        let (distribution_name, distribution_meta) =
+            node_from_file_iter(sample_meta.into_iter()).unwrap();
+
+        assert_eq!(distribution_name, "sample-package");
+        assert_eq!(distribution_meta.installed_version, "0.0.1");
+        assert_eq!(distribution_meta.dependencies.is_empty(), false);
+        assert_eq!(distribution_meta.dependencies.len(), 3);
+
+        for (depname, depver) in [
+            ("numpy", ">=1.22.4"),
+            ("numpy", ">=1.23.2"),
+            ("numpy", ">=1.26.0"),
+        ] {
+            let expected_dependency = RequiredDistribution::from_str(depname, depver);
+            let actual_dependency = distribution_meta
+                .dependencies
+                .get(&expected_dependency)
+                .expect("Can not find an according dependency");
+
+            assert_eq!(expected_dependency.name, actual_dependency.name);
+            assert_eq!(
+                expected_dependency.required_version,
+                actual_dependency.required_version
+            );
+        }
     }
 
     #[test]
