@@ -29,7 +29,7 @@ pub struct RequiredDistribution {
 impl RequiredDistribution {
     fn from_str(name: &str, version: &str) -> Self {
         Self {
-            name: name.to_string(),
+            name: normalize_name(name, "-"),
             required_version: version.to_string(),
         }
     }
@@ -42,31 +42,38 @@ pub struct DistributionMeta {
 }
 
 impl DistributionMeta {
-    fn new(
+    fn from_parsed_file(
         installed_version: String,
-        dependencies: HashSet<RequiredDistribution>,
+        dependencies: HashSet<(String, String)>,
     ) -> Result<Self, &'static str> {
-        if installed_version.is_empty() {
-            return Err("Empty <Version> was provided while construction <DistributionMeta>");
+        let mut parsed_deps = HashSet::new();
+        for (dep_name, version_expr) in dependencies {
+            let parse_pair = DepParser::parse(Rule::version_comparison, &version_expr)
+                .map_err(|_| "Failed to parse dependency version expression")?
+                .next()
+                .unwrap();
+
+            parsed_deps.insert(RequiredDistribution::from_str(
+                &dep_name,
+                parse_pair.as_str(),
+            ));
         }
 
         Ok(Self {
             installed_version,
-            dependencies,
+            dependencies: parsed_deps,
         })
     }
 }
 
 pub type DependencyDag = HashMap<DistributionName, DistributionMeta>;
 
-fn node_from_file_iter<I, S>(
-    source_iter: I,
-) -> Result<(DistributionName, DistributionMeta), &'static str>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    let mut dependencies: HashSet<RequiredDistribution> = HashSet::new();
+enum ParsedLine {
+    Meta(String, String),       // key,value of meta-parameter such as name, version
+    Dependency(String, String), // name and parameters of dependency
+}
+
+fn parse_line(line: &str) -> Option<ParsedLine> {
     let rules = [
         (
             Rule::distribution_name_row,
@@ -85,71 +92,69 @@ where
         ),
     ];
 
-    let mut parsed_meta: HashMap<String, String> = HashMap::new();
-    let mut parsed_dependencies: HashSet<(String, String)> = HashSet::new();
+    for (row_rule, key_rule, value_rule) in rules {
+        if let Ok(mut parse_pair) = DepParser::parse(row_rule, line.as_ref()) {
+            let inner_pair = parse_pair
+                .next()
+                .expect("Can not access inner objects for parsed string")
+                .into_inner();
+
+            let mut key: String = String::new();
+            let mut value: String = String::new();
+            for p in inner_pair {
+                if p.as_rule() == key_rule {
+                    key = p.as_str().to_lowercase();
+                }
+                if p.as_rule() == value_rule {
+                    value = p.as_str().to_string();
+                }
+            }
+
+            if key.starts_with("name") || key.starts_with("version") {
+                return Some(ParsedLine::Meta(key, value));
+            } else {
+                return Some(ParsedLine::Dependency(key, value));
+            }
+        }
+    }
+    None
+}
+
+fn node_from_file_iter<I, S>(
+    source_iter: I,
+) -> Result<(DistributionName, DistributionMeta), &'static str>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut name: Option<String> = None;
+    let mut version: Option<String> = None;
+    let mut dependencies: HashSet<(String, String)> = HashSet::new();
 
     // iterate over all lines and get parsed strings for required keys
     for line in source_iter {
-        let filtered: (String, String) = rules
-            .into_iter()
-            .filter_map(|(row_rule, key_rule, value_rule)| {
-                if let Ok(mut parse_pair) = DepParser::parse(row_rule, line.as_ref()) {
-                    let inner_pair = parse_pair
-                        .next()
-                        .expect("Can not access inner objects for parsed string")
-                        .into_inner();
-
-                    let mut key_value: String = String::new();
-                    let mut value: String = String::new();
-                    for p in inner_pair {
-                        if p.as_rule() == key_rule {
-                            key_value = p.as_str().to_lowercase();
-                        }
-                        if p.as_rule() == value_rule {
-                            value = p.as_str().to_string();
-                        }
+        if let Some(parsed_line) = parse_line(line.as_ref()) {
+            match parsed_line {
+                ParsedLine::Meta(k, v) => {
+                    if k.starts_with("name") {
+                        name = Some(v);
+                    } else if k.starts_with("version") {
+                        version = Some(v);
                     }
-                    return Some((key_value, value));
-                } else {
-                    return None;
                 }
-            })
-            .collect();
-
-        if !filtered.0.is_empty() {
-            // it is important to use `.starts_with` bc keywords can be found inside the string
-            if filtered.0.starts_with("name") || filtered.0.starts_with("version") {
-                parsed_meta.insert(filtered.0, filtered.1);
-            } else {
-                parsed_dependencies.insert(filtered);
+                ParsedLine::Dependency(k, v) => {
+                    dependencies.insert((k, v));
+                }
             }
         }
     }
 
-    let name = match parsed_meta.contains_key("name") {
-        true => parsed_meta.remove("name").unwrap(),
-        false => return Err("Can not parse package name from file"),
-    };
-    let version = match parsed_meta.contains_key("version") {
-        true => parsed_meta.remove("version").unwrap(),
-        false => return Err("Can not parse version name from file"),
-    };
+    // validate and construnct all the neccesary objects
+    let validated_name = normalize_name(&name.ok_or("Can not parse package name from file")?, "-");
+    let validated_version = version.ok_or("Can not parse version name from file")?;
+    let dm = DistributionMeta::from_parsed_file(validated_version, dependencies)?;
 
-    for (k, v) in parsed_dependencies {
-        let parse_pair = DepParser::parse(Rule::version_comparison, v.as_ref())
-            .expect("Unable to parse string:\n")
-            .next()
-            .unwrap();
-        let normalized_name = normalize_name(&k, "-");
-        dependencies.insert(RequiredDistribution::from_str(
-            &normalized_name,
-            parse_pair.as_str(),
-        ));
-    }
-
-    let dm = DistributionMeta::new(version, dependencies)?;
-
-    Ok(((normalize_name(&name, "-")), dm))
+    Ok(((normalize_name(&validated_name, "-")), dm))
 }
 
 const METADATA_FILE_NAME: &'static str = "METADATA";
