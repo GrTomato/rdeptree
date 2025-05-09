@@ -1,14 +1,12 @@
+use crate::parser::DepParser;
+use crate::parser::Rule;
 use crate::utils::{get_lnreader, get_meta_dirs};
 
+use pest::Parser;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-
-/// from https://packaging.python.org/en/latest/specifications/name-normalization/#name-normalization
-const DISTRMETA_NAME_NORMALIZE_REGEX: &'static str = r"[-_.]+";
-
-pub type DistributionName = String;
 
 fn normalize_name(name: &str, replace_to: &str) -> String {
     let re_name_normalize = Regex::new(DISTRMETA_NAME_NORMALIZE_REGEX).unwrap();
@@ -16,6 +14,11 @@ fn normalize_name(name: &str, replace_to: &str) -> String {
         .replace_all(name, replace_to)
         .to_lowercase()
 }
+
+/// from https://packaging.python.org/en/latest/specifications/name-normalization/#name-normalization
+const DISTRMETA_NAME_NORMALIZE_REGEX: &'static str = r"[-_.]+";
+
+pub type DistributionName = String;
 
 #[derive(Eq, PartialEq, Hash, Debug)]
 pub struct RequiredDistribution {
@@ -56,61 +59,91 @@ impl DistributionMeta {
 
 pub type DependencyDag = HashMap<DistributionName, DistributionMeta>;
 
-const DISTRMETA_NAME_REGEX: &'static str = r"^(?:n|N)ame:(\s)?(?<name>[a-zA-Z0-9._-]+)";
-const DISTRMETA_VERSION_REGEX: &'static str =
-    r"^(?:v|V)ersion:(\s)?(?<version>\d+(?:(?:\.|!)?(?:dev|post|a|b)?\d+\+?(?:rc|abc)?)+)*";
-const DEPDISTRMETA_NAME_REGEX: &'static str = r"^Requires-Dist:(\s)*(?<depname>[a-zA-Z0-9._-]+)(\s)?(\[\w+(?:,\w+)*\])?\s?(\()?(?<depver>(?:(?:,?\s?)?(?:<|<=|!=|==|>=|>|~=|===)+\s?(?:\d[!+\d.a-zA-Z*]*)?)+)?(\))?((?:\s)?;\s.*)?$";
-
-fn node_from_file_iter<I, S>(i: I) -> Result<(DistributionName, DistributionMeta), &'static str>
+fn node_from_file_iter<I, S>(
+    source_iter: I,
+) -> Result<(DistributionName, DistributionMeta), &'static str>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let name_regex = Regex::new(DISTRMETA_NAME_REGEX).unwrap();
-    let installed_ver_regex = Regex::new(DISTRMETA_VERSION_REGEX).unwrap();
-    let dependency_regex = Regex::new(DEPDISTRMETA_NAME_REGEX).unwrap();
-
-    let mut name = String::new();
-    let mut installed_ver = String::new();
     let mut dependencies: HashSet<RequiredDistribution> = HashSet::new();
+    let rules = [
+        (
+            Rule::distribution_name_row,
+            Rule::distribution_name_kw,
+            Rule::distribution_name,
+        ),
+        (
+            Rule::distribution_version_row,
+            Rule::distribution_version_kw,
+            Rule::distribution_version,
+        ),
+        (
+            Rule::required_distribution_row,
+            Rule::distribution_name,
+            Rule::dependency_str,
+        ),
+    ];
 
-    for line in i {
-        if name_regex.is_match(line.as_ref()) {
-            let non_normalized_name = name_regex
-                .captures(line.as_ref())
-                .unwrap()
-                .name("name")
-                .unwrap()
-                .as_str();
-            name = normalize_name(non_normalized_name, "-");
-        } else if installed_ver_regex.is_match(line.as_ref()) {
-            installed_ver = installed_ver_regex
-                .captures(line.as_ref())
-                .unwrap()
-                .name("version")
-                .unwrap()
-                .as_str()
-                .to_string();
-        } else if dependency_regex.is_match(line.as_ref()) {
-            let captures = dependency_regex.captures(line.as_ref()).unwrap();
-            let norm_name = normalize_name(captures.name("depname").unwrap().as_str(), "-");
-            dependencies.insert(RequiredDistribution::from_str(
-                &norm_name,
-                captures
-                    .name("depver")
-                    .map(|val| val.as_str())
-                    .unwrap_or("Any"),
-            ));
+    let mut parsed_dependencies: HashMap<String, String> = HashMap::new();
+
+    // iterate over all lines and get parsed strings for required keys
+    for line in source_iter {
+        let filtered: (String, String) = rules
+            .into_iter()
+            .filter_map(|(row_rule, key_rule, value_rule)| {
+                if let Ok(mut parse_pair) = DepParser::parse(row_rule, line.as_ref()) {
+                    let inner_pair = parse_pair
+                        .next()
+                        .expect("Can not access inner objects for parsed string")
+                        .into_inner();
+
+                    let mut key_value: String = String::new();
+                    let mut value: String = String::new();
+                    for p in inner_pair {
+                        if p.as_rule() == key_rule {
+                            key_value = p.as_str().to_lowercase();
+                        }
+                        if p.as_rule() == value_rule {
+                            value = p.as_str().to_string();
+                        }
+                    }
+                    return Some((key_value, value));
+                } else {
+                    return None;
+                }
+            })
+            .collect();
+
+        if !filtered.0.is_empty() {
+            parsed_dependencies.insert(filtered.0, filtered.1);
         }
     }
 
-    let dm = DistributionMeta::new(installed_ver, dependencies)?;
+    let name = match parsed_dependencies.contains_key("name") {
+        true => parsed_dependencies.remove("name").unwrap(),
+        false => return Err("Can not parse package name from file"),
+    };
+    let version = match parsed_dependencies.contains_key("version") {
+        true => parsed_dependencies.remove("version").unwrap(),
+        false => return Err("Can not parse version name from file"),
+    };
 
-    if name.is_empty() {
-        return Err("Empty <Name> was provided while construction <DagNode>");
+    for (k, v) in parsed_dependencies {
+        let parse_pair = DepParser::parse(Rule::version_comparison, v.as_ref())
+            .expect("Unable to parse string:\n")
+            .next()
+            .unwrap();
+        let normalized_name = normalize_name(&k, "-");
+        dependencies.insert(RequiredDistribution::from_str(
+            &normalized_name,
+            parse_pair.as_str(),
+        ));
     }
 
-    Ok((name, dm))
+    let dm = DistributionMeta::new(version, dependencies)?;
+
+    Ok(((normalize_name(&name, "-")), dm))
 }
 
 const METADATA_FILE_NAME: &'static str = "METADATA";
@@ -248,10 +281,7 @@ mod test {
 
         let result = node_from_file_iter(sample_meta.into_iter());
         assert!(result.is_err());
-        assert_eq!(
-            result.err(),
-            Some("Empty <Version> was provided while construction <DistributionMeta>")
-        );
+        assert_eq!(result.err(), Some("Can not parse version name from file"));
     }
 
     #[test]
@@ -263,10 +293,7 @@ mod test {
 
         let result = node_from_file_iter(sample_meta.into_iter());
         assert!(result.is_err());
-        assert_eq!(
-            result.err(),
-            Some("Empty <Name> was provided while construction <DagNode>")
-        );
+        assert_eq!(result.err(), Some("Can not parse package name from file"));
     }
 
     #[test]

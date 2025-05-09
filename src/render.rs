@@ -14,12 +14,12 @@ pub fn render_dag(
         Some(val) => {
             if let Some(required_ver) = node_required_ver {
                 println!(
-                    "{}{} [required={}, installed={}]",
+                    "{}{} [required: {}, installed: {}]",
                     prefix, node_name, required_ver, val.installed_version
                 )
             } else {
                 println!(
-                    "{}{} [installed={}]",
+                    "{}{} [installed: {}]",
                     prefix, node_name, val.installed_version
                 );
             }
