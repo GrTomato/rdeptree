@@ -29,7 +29,7 @@ pub struct RequiredDistribution {
 impl RequiredDistribution {
     fn from_str(name: &str, version: &str) -> Self {
         Self {
-            name: name.to_string(),
+            name: normalize_name(name, "-"),
             required_version: version.to_string(),
         }
     }
@@ -42,31 +42,38 @@ pub struct DistributionMeta {
 }
 
 impl DistributionMeta {
-    fn new(
+    fn from_parsed_file(
         installed_version: String,
-        dependencies: HashSet<RequiredDistribution>,
+        dependencies: HashSet<(String, String)>,
     ) -> Result<Self, &'static str> {
-        if installed_version.is_empty() {
-            return Err("Empty <Version> was provided while construction <DistributionMeta>");
+        let mut parsed_deps = HashSet::new();
+        for (dep_name, version_expr) in dependencies {
+            let parse_pair = DepParser::parse(Rule::version_comparison, &version_expr)
+                .map_err(|_| "Failed to parse dependency version expression")?
+                .next()
+                .unwrap();
+
+            parsed_deps.insert(RequiredDistribution::from_str(
+                &dep_name,
+                parse_pair.as_str(),
+            ));
         }
 
         Ok(Self {
             installed_version,
-            dependencies,
+            dependencies: parsed_deps,
         })
     }
 }
 
 pub type DependencyDag = HashMap<DistributionName, DistributionMeta>;
 
-fn node_from_file_iter<I, S>(
-    source_iter: I,
-) -> Result<(DistributionName, DistributionMeta), &'static str>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    let mut dependencies: HashSet<RequiredDistribution> = HashSet::new();
+enum ParsedLine {
+    Meta(String, String),       // key,value of meta-parameter such as name, version
+    Dependency(String, String), // name and parameters of dependency
+}
+
+fn parse_line(line: &str) -> Option<ParsedLine> {
     let rules = [
         (
             Rule::distribution_name_row,
@@ -85,65 +92,69 @@ where
         ),
     ];
 
-    let mut parsed_dependencies: HashMap<String, String> = HashMap::new();
+    for (row_rule, key_rule, value_rule) in rules {
+        if let Ok(mut parse_pair) = DepParser::parse(row_rule, line.as_ref()) {
+            let inner_pair = parse_pair
+                .next()
+                .expect("Can not access inner objects for parsed string")
+                .into_inner();
+
+            let mut key: String = String::new();
+            let mut value: String = String::new();
+            for p in inner_pair {
+                if p.as_rule() == key_rule {
+                    key = p.as_str().to_lowercase();
+                }
+                if p.as_rule() == value_rule {
+                    value = p.as_str().to_string();
+                }
+            }
+
+            if key.starts_with("name") || key.starts_with("version") {
+                return Some(ParsedLine::Meta(key, value));
+            } else {
+                return Some(ParsedLine::Dependency(key, value));
+            }
+        }
+    }
+    None
+}
+
+fn node_from_file_iter<I, S>(
+    source_iter: I,
+) -> Result<(DistributionName, DistributionMeta), &'static str>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut name: Option<String> = None;
+    let mut version: Option<String> = None;
+    let mut dependencies: HashSet<(String, String)> = HashSet::new();
 
     // iterate over all lines and get parsed strings for required keys
     for line in source_iter {
-        let filtered: (String, String) = rules
-            .into_iter()
-            .filter_map(|(row_rule, key_rule, value_rule)| {
-                if let Ok(mut parse_pair) = DepParser::parse(row_rule, line.as_ref()) {
-                    let inner_pair = parse_pair
-                        .next()
-                        .expect("Can not access inner objects for parsed string")
-                        .into_inner();
-
-                    let mut key_value: String = String::new();
-                    let mut value: String = String::new();
-                    for p in inner_pair {
-                        if p.as_rule() == key_rule {
-                            key_value = p.as_str().to_lowercase();
-                        }
-                        if p.as_rule() == value_rule {
-                            value = p.as_str().to_string();
-                        }
+        if let Some(parsed_line) = parse_line(line.as_ref()) {
+            match parsed_line {
+                ParsedLine::Meta(k, v) => {
+                    if k.starts_with("name") {
+                        name = Some(v);
+                    } else if k.starts_with("version") {
+                        version = Some(v);
                     }
-                    return Some((key_value, value));
-                } else {
-                    return None;
                 }
-            })
-            .collect();
-
-        if !filtered.0.is_empty() {
-            parsed_dependencies.insert(filtered.0, filtered.1);
+                ParsedLine::Dependency(k, v) => {
+                    dependencies.insert((k, v));
+                }
+            }
         }
     }
 
-    let name = match parsed_dependencies.contains_key("name") {
-        true => parsed_dependencies.remove("name").unwrap(),
-        false => return Err("Can not parse package name from file"),
-    };
-    let version = match parsed_dependencies.contains_key("version") {
-        true => parsed_dependencies.remove("version").unwrap(),
-        false => return Err("Can not parse version name from file"),
-    };
+    // validate and construnct all the neccesary objects
+    let validated_name = normalize_name(&name.ok_or("Can not parse package name from file")?, "-");
+    let validated_version = version.ok_or("Can not parse version name from file")?;
+    let dm = DistributionMeta::from_parsed_file(validated_version, dependencies)?;
 
-    for (k, v) in parsed_dependencies {
-        let parse_pair = DepParser::parse(Rule::version_comparison, v.as_ref())
-            .expect("Unable to parse string:\n")
-            .next()
-            .unwrap();
-        let normalized_name = normalize_name(&k, "-");
-        dependencies.insert(RequiredDistribution::from_str(
-            &normalized_name,
-            parse_pair.as_str(),
-        ));
-    }
-
-    let dm = DistributionMeta::new(version, dependencies)?;
-
-    Ok(((normalize_name(&name, "-")), dm))
+    Ok(((normalize_name(&validated_name, "-")), dm))
 }
 
 const METADATA_FILE_NAME: &'static str = "METADATA";
@@ -203,6 +214,45 @@ mod test {
             expected_dependency.required_version,
             actual_dependency.required_version
         );
+    }
+
+    #[test]
+    fn distr_meta_from_iter_repeating_distrs_different_version() {
+        let sample_meta = [
+            "package: some-package",
+            "Name: Sample_Package",
+            "Version: 0.0.1",
+            "Developed by me",
+            "Requires-Dist: numpy>=1.22.4; python_version < \"3.11\"",
+            "Requires-Dist: numpy>=1.23.2; python_version == \"3.11\"",
+            "Requires-Dist: numpy>=1.26.0; python_version >= \"3.12\"",
+        ];
+
+        let (distribution_name, distribution_meta) =
+            node_from_file_iter(sample_meta.into_iter()).unwrap();
+
+        assert_eq!(distribution_name, "sample-package");
+        assert_eq!(distribution_meta.installed_version, "0.0.1");
+        assert_eq!(distribution_meta.dependencies.is_empty(), false);
+        assert_eq!(distribution_meta.dependencies.len(), 3);
+
+        for (depname, depver) in [
+            ("numpy", ">=1.22.4"),
+            ("numpy", ">=1.23.2"),
+            ("numpy", ">=1.26.0"),
+        ] {
+            let expected_dependency = RequiredDistribution::from_str(depname, depver);
+            let actual_dependency = distribution_meta
+                .dependencies
+                .get(&expected_dependency)
+                .expect("Can not find an according dependency");
+
+            assert_eq!(expected_dependency.name, actual_dependency.name);
+            assert_eq!(
+                expected_dependency.required_version,
+                actual_dependency.required_version
+            );
+        }
     }
 
     #[test]
