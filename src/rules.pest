@@ -3,23 +3,23 @@
 WHITESPACE = _{ " " | "\t" }
 
 // Distribution NAME grammar
-distribution_name_kw =  { ^"Name" }
+distribution_name_kw = @{ SOI ~ ^"Name" }
 distribution_name    = @{ (ASCII_ALPHANUMERIC | "-" | "_" | ".")+ }
 
 distribution_name_row = {
-    SOI ~ distribution_name_kw ~ ":" ~ distribution_name ~ EOI
+    distribution_name_kw ~ ":" ~ distribution_name ~ EOI
 }
 
 // Distribution VERSION grammar
-distribution_version_kw =  { ^"Version" }
+distribution_version_kw = @{ SOI ~ ^"Version" }
 distribution_version    = @{ (ASCII_ALPHANUMERIC | "-" | "_" | "." | "*" | "+" | "!")+ }
 
 distribution_version_row = {
-    SOI ~ distribution_version_kw ~ ":" ~ distribution_version ~ EOI
+    distribution_version_kw ~ ":" ~ distribution_version ~ EOI
 }
 
 // REQUIRED distribution grammar
-required_distribution_kw =  { ^"Requires-Dist:" }
+required_distribution_kw = @{ SOI ~ ^"Requires-Dist:" }
 comparison_operator      =  { ">=" | "<=" | "!=" | "===" | "==" | "~=" | ">" | "<" }
 version_comparison       = @{ (comparison_operator ~ WHITESPACE? ~ distribution_version) ~ ("," ~ comparison_operator ~ WHITESPACE? ~ distribution_version)? }
 env_var                  =  {
@@ -45,5 +45,5 @@ extras         = { (";" ~ env_var ~ comparison_operator ~ string_literal)? }
 dependency_str = { version_comparison ~ extras? }
 
 required_distribution_row = {
-    SOI ~ required_distribution_kw ~ distribution_name ~ dependency_str ~ EOI
+    required_distribution_kw ~ distribution_name ~ dependency_str ~ EOI
 }
